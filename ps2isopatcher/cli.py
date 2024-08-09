@@ -19,7 +19,7 @@ def print_tree_flat(item):
 
 def main():
     f_name = "mm.iso"
-    iso = Ps2Iso(f_name, mutable=True)
+    iso = Ps2Iso(f_name, mutable=False)
     print_tree(iso.tree)
     print_tree_flat(iso.tree)
     path = "/RAW/IOPRP310.IMG;1"
