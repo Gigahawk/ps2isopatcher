@@ -7,8 +7,6 @@ import os
 import logging
 from math import ceil
 
-from bitstring import BitArray, Bits
-
 from ps2isopatcher.util import FileBytes, both_endian_int
 
 
