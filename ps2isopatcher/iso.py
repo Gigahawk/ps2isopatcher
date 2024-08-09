@@ -276,11 +276,13 @@ class TreeFolder(TreeObject):
 
 
 class Ps2Iso:
-    def __init__(self, filename):
+    def __init__(self, filename, mutable=False):
         self._set_logger()
-        self.log.info(f"Loading {filename}, this may take a while...")
-        #self.data = Bits(filename=filename)
-        self.data = BitArray(filename=filename)
+        if mutable:
+            self.log.info(f"Loading {filename}, this may take a while...")
+            self.data = BitArray(filename=filename)
+        else:
+            self.data = Bits(filename=filename)
         self.pvd = PVD(self.data)
         self.block_size = self.pvd.logical_block_size
 
