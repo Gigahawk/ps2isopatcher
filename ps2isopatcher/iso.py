@@ -1,10 +1,16 @@
+# https://wiki.osdev.org/ISO_9660
+import os
 import logging
 from math import ceil
+
 from bitstring import BitArray, Bits
 
+from ps2isopatcher.util import FileBytes
 
+
+# Primary Volume Descriptor
 class PVD:
-    PVD_OFFSET = 0x8000
+    PVD_OFFSET = 0x10*2048  # PVD starts after System Area
     PVD_LENGTH = 2048
     SYST_ID_OFFSET = 8
     SYST_ID_LENGTH = 32
@@ -18,9 +24,10 @@ class PVD:
     M_PATH_TABLE_OPT_OFFSET = 152
     PATH_TABLE_LENGTH = 4
 
-    def __init__(self, data):
+    def __init__(self, data: bytes):
         self.data = data[
-            self.PVD_OFFSET*8:(self.PVD_OFFSET+self.PVD_LENGTH)*8]
+            self.PVD_OFFSET:(self.PVD_OFFSET+self.PVD_LENGTH)
+        ]
 
     @property
     def system_identifier(self):
@@ -56,38 +63,37 @@ class PVD:
         return self._get_intle(
             self.M_PATH_TABLE_OPT_OFFSET, self.PATH_TABLE_LENGTH)
 
-    def _get_intle(self, offset, length):
+    def _get_intle(self, offset: int, length: int) -> int:
         e = self._get_entry(offset, length)
-        return e.intle
+        return int.from_bytes(e, byteorder="little", signed=True)
 
-    def _get_intme(self, offset, length):
+    def _get_intbe(self, offset: int, length: int) -> int:
         e = self._get_entry(offset, length)
-        return e.intme
+        return int.from_bytes(e, byteorder="big", signed=True)
 
-    def _get_str(self, offset, length):
+    def _get_str(self, offset: int, length: int) -> str:
         e = self._get_entry(offset, length)
-        return e.tobytes().decode().strip()
+        return e.decode().strip()
 
-    def _get_entry(self, offset, length):
-        return self.data[offset*8:(offset+length)*8]
+    def _get_entry(self, offset: int, length: int) -> bytes:
+        return self.data[offset:(offset+length)]
 
 class PathTable:
-    def __init__(self, data, addr, size):
+    def __init__(self, data: bytes, addr: int, size: int):
         self.data = data
         self.tbl_data = self.data[addr:(addr+size)]
-        self.length = len(self.tbl_data)/8
 
     def get_entries(self):
         paths = []
 
         i = 0
         dir_id = 1
-        while i < self.length:
-            name_len = self.tbl_data[i*8:(i+1)*8].int
+        while i < len(self.tbl_data):
+            name_len = int.from_bytes(self.tbl_data[i:(i+1)])
             total_len = name_len + 8
             if name_len % 2:
                 total_len += 1
-            entry = self.tbl_data[i*8:(i+total_len)*8]
+            entry = self.tbl_data[i:(i+total_len)]
             lba = self._get_lba(entry)
             parent_dir_id = self._get_parent_dir_id(entry)
             name = self._get_name(entry, name_len)
@@ -101,39 +107,39 @@ class PathTable:
             dir_id += 1
         return paths
 
-    def _get_name(self, entry, length):
-        return entry[8*8:(8+length)*8].tobytes().decode().strip()
+    def _get_name(self, entry: bytes, length: int) -> str:
+        return entry[8:(8+length)].decode().strip()
 
-    def _get_lba(self, entry):
+    def _get_lba(self, entry: bytes):
         pass
 
-    def _get_parent_dir_id(self, entry):
+    def _get_parent_dir_id(self, entry: bytes):
         pass
 
 
 class LPathTable(PathTable):
     def _get_lba(self, entry):
-        return entry[2*8:6*8].intle
+        return int.from_bytes(entry[2:6], byteorder="little")
 
     def _get_parent_dir_id(self, entry):
-        return entry[6*8:8*8].intle
+        return int.from_bytes(entry[6:8], byteorder="little")
 
 class PathTables:
-    def __init__(self, data, pvd):
+    def __init__(self, data: bytes, pvd: PVD):
         self.data = data
-        size = pvd.path_table_size*8
-        lpt_addr = pvd.l_path_table*2048*8
+        size = pvd.path_table_size
+        lpt_addr = pvd.l_path_table*2048
         self.l_path_table = LPathTable(self.data, lpt_addr, size)
 
-    def get_path_tree(self):
+    def get_path_tree(self) -> "TreeFolder":
         paths = self.l_path_table.get_entries()
         root = paths.pop(0)
         return TreeFolder(root, children=paths, data=self.data)
 
 class DirTable:
-    def __init__(self, data, lba, block_size):
-        self.dt_addr = lba*block_size*8
-        self.dt_size = block_size*8
+    def __init__(self, data: bytes, lba: int, block_size: int):
+        self.dt_addr = lba*block_size
+        self.dt_size = block_size
         self.data = data
         self.set_tbl_data()
 
@@ -142,10 +148,10 @@ class DirTable:
 
         i = 0
         while True:
-            total_len = self.tbl_data[i*8:(i+1)*8].int
+            total_len = int.from_bytes(self.tbl_data[i:(i+1)])
             if total_len == 0:
                 break
-            entry = self.tbl_data[i*8:(i+total_len)*8]
+            entry = self.tbl_data[i:(i+total_len)]
             lba = self._get_lba(entry)
             size = self._get_size(entry)
             name_len = self._get_name_length(entry)
@@ -158,18 +164,19 @@ class DirTable:
             i += total_len
         return entries
 
-    def set_entry(self, name, lba, size):
+    def set_entry(self, name: str, lba: int, size: int):
         i = 0
         print(f"Searching for {name}")
         while True:
-            total_len = self.tbl_data[i*8:(i+1)*8].int
+            total_len = int.from_bytes(self.tbl_data[i:(i+1)])
             if total_len == 0:
                 break
-            offset = i*8
-            entry = self.tbl_data[offset:(i+total_len)*8]
+            offset = i
+            entry = self.tbl_data[offset:(i+total_len)]
             name_len = self._get_name_length(entry)
             n = self._get_name(entry, name_len)
             print(n)
+            import pdb;pdb.set_trace()
             if n == name:
                 iso_offset = offset + self.dt_addr
                 lba_offset = iso_offset + 2*8
@@ -186,8 +193,6 @@ class DirTable:
                 size_bits.append(size_be)
                 self.data.overwrite(lba_bits, lba_offset)
                 self.data.overwrite(size_bits, size_offset)
-                import pdb
-                pdb.set_trace()
                 self.set_tbl_data()
                 break
             i += total_len
@@ -195,17 +200,17 @@ class DirTable:
     def set_tbl_data(self):
         self.tbl_data = self.data[self.dt_addr:(self.dt_addr+self.dt_size)]
 
-    def _get_lba(self, entry):
-        return entry[2*8:6*8].intle
+    def _get_lba(self, entry) -> int:
+        return int.from_bytes(entry[2:6], byteorder="little")
 
-    def _get_size(self, entry):
-        return entry[10*8:14*8].intle
+    def _get_size(self, entry) -> int:
+        return int.from_bytes(entry[10:14], byteorder="little")
 
-    def _get_name_length(self, entry):
-        return entry[32*8:33*8].intle
+    def _get_name_length(self, entry) -> int:
+        return int.from_bytes(entry[32:33], byteorder="little")
 
-    def _get_name(self, entry, length):
-        return entry[33*8:(33+length)*8].tobytes().decode().strip()
+    def _get_name(self, entry, length) -> str:
+        return entry[33:(33+length)].decode().strip()
 
 
 class TreeObject:
@@ -267,7 +272,7 @@ class TreeFolder(TreeObject):
         files = files[2:]
         self.__children.extend(files)
 
-    def get_child(self, name):
+    def get_child(self, name: str):
         return next(i for i in self.children if i.name == name)
 
     @property
@@ -276,33 +281,34 @@ class TreeFolder(TreeObject):
 
 
 class Ps2Iso:
-    def __init__(self, filename, mutable=False):
+    def __init__(self, filename: str | os.PathLike, mutable: bool=False):
         self._set_logger()
         if mutable:
             self.log.info(f"Loading {filename}, this may take a while...")
-            self.data = BitArray(filename=filename)
+            with open(filename, "rb") as f:
+                self.data = f.read()
         else:
-            self.data = Bits(filename=filename)
+            self.data = FileBytes(filename)
         self.pvd = PVD(self.data)
         self.block_size = self.pvd.logical_block_size
 
         if self.pvd.system_identifier != "PLAYSTATION":
             self.log.warning((
-                f"system_identifier: '{self.pvd.system_identifier}', "
-                "should be 'PLAYSTATION'"))
+                f"system_identifier is: '{self.pvd.system_identifier}', "
+                "but should be 'PLAYSTATION'"))
             self.log.warning(
                 f"{filename} may not be a PS2 ISO file")
         if self.block_size != 2048:
             self.log.warning((
-                f"logical_block_size: {self.block_size}, "
-                "should be 2048"))
+                f"logical_block_size is: {self.block_size}, "
+                "but should be 2048"))
             self.log.warning(
                 f"{filename} may not be a PS2 ISO file")
 
         self.path_tables = PathTables(self.data, self.pvd)
         self.tree = self.path_tables.get_path_tree()
 
-    def get_object(self, path):
+    def get_object(self, path: str):
         paths = path.split("/")
         if paths[0] == "":
             paths.pop(0)
