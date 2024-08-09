@@ -1,4 +1,7 @@
 # https://wiki.osdev.org/ISO_9660
+from typing import Optional
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 import os
 import logging
 from math import ceil
@@ -25,6 +28,11 @@ class PVD:
     PATH_TABLE_LENGTH = 4
 
     def __init__(self, data: bytes):
+        """The Primary Volume Descriptor of an ISO9660 file
+
+        Args:
+            data: the contents of the ISO file
+        """
         self.data = data[
             self.PVD_OFFSET:(self.PVD_OFFSET+self.PVD_LENGTH)
         ]
@@ -78,12 +86,34 @@ class PVD:
     def _get_entry(self, offset: int, length: int) -> bytes:
         return self.data[offset:(offset+length)]
 
-class PathTable:
+@dataclass
+class ObjectEntry:
+    name: str
+    lba: int
+
+@dataclass
+class FileEntry(ObjectEntry):
+    size: int
+
+@dataclass
+class PathTableEntry(ObjectEntry):
+    parent_dir_id: int
+    dir_id: int
+
+class PathTable(ABC):
     def __init__(self, data: bytes, addr: int, size: int):
+        """A path table describing where every file/folder is on disk
+
+        Args:
+            data: disk contents
+            addr: address of path table
+            size: size of path table
+        """
         self.data = data
         self.tbl_data = self.data[addr:(addr+size)]
 
-    def get_entries(self):
+    def get_entries(self) -> list[PathTableEntry]:
+        """Get a list of all entries in the path table"""
         paths = []
 
         i = 0
@@ -97,12 +127,12 @@ class PathTable:
             lba = self._get_lba(entry)
             parent_dir_id = self._get_parent_dir_id(entry)
             name = self._get_name(entry, name_len)
-            paths.append({
-                "name": name,
-                "lba": lba,
-                "parent_dir_id": parent_dir_id,
-                "dir_id": dir_id
-            })
+            paths.append(PathTableEntry(
+                name=name,
+                lba=lba,
+                parent_dir_id=parent_dir_id,
+                dir_id=dir_id
+            ))
             i += total_len
             dir_id += 1
         return paths
@@ -110,40 +140,62 @@ class PathTable:
     def _get_name(self, entry: bytes, length: int) -> str:
         return entry[8:(8+length)].decode().strip()
 
-    def _get_lba(self, entry: bytes):
+    @abstractmethod
+    def _get_lba(self, entry: bytes) -> int:
         pass
 
-    def _get_parent_dir_id(self, entry: bytes):
+    @abstractmethod
+    def _get_parent_dir_id(self, entry: bytes) -> int:
         pass
 
 
 class LPathTable(PathTable):
-    def _get_lba(self, entry):
+    def _get_lba(self, entry: bytes) -> int:
         return int.from_bytes(entry[2:6], byteorder="little")
 
-    def _get_parent_dir_id(self, entry):
+    def _get_parent_dir_id(self, entry) -> int:
         return int.from_bytes(entry[6:8], byteorder="little")
+
+class MPathTable(PathTable):
+    def _get_lba(self, entry: bytes) -> int:
+        return int.from_bytes(entry[2:6], byteorder="big")
+
+    def _get_parent_dir_id(self, entry) -> int:
+        return int.from_bytes(entry[6:8], byteorder="big")
 
 class PathTables:
     def __init__(self, data: bytes, pvd: PVD):
+        """Wrapper class to access the path tables on disk
+        """
         self.data = data
         size = pvd.path_table_size
         lpt_addr = pvd.l_path_table*2048
+        mpt_addr = pvd.m_path_table*2048
         self.l_path_table = LPathTable(self.data, lpt_addr, size)
+        self.m_path_table = MPathTable(self.data, mpt_addr, size)
 
     def get_path_tree(self) -> "TreeFolder":
         paths = self.l_path_table.get_entries()
         root = paths.pop(0)
         return TreeFolder(root, children=paths, data=self.data)
 
+
 class DirTable:
     def __init__(self, data: bytes, lba: int, block_size: int):
+        """Directory table showing all files inside of a folder
+
+        Args:
+            data: disk contents
+            lba: block number where the table is
+            block_lize: size of a block on disk
+
+        """
         self.dt_addr = lba*block_size
         self.dt_size = block_size
         self.data = data
         self.set_tbl_data()
 
-    def get_entries(self):
+    def get_entries(self) -> list[FileEntry]:
         entries = []
 
         i = 0
@@ -156,11 +208,11 @@ class DirTable:
             size = self._get_size(entry)
             name_len = self._get_name_length(entry)
             name = self._get_name(entry, name_len)
-            entries.append({
-                "name": name,
-                "size": size,
-                "lba": lba,
-            })
+            entries.append(FileEntry(
+                name=name,
+                size=size,
+                lba=lba,
+            ))
             i += total_len
         return entries
 
@@ -176,7 +228,6 @@ class DirTable:
             name_len = self._get_name_length(entry)
             n = self._get_name(entry, name_len)
             print(n)
-            import pdb;pdb.set_trace()
             if n == name:
                 iso_offset = offset + self.dt_addr
                 lba_offset = iso_offset + 2*8
@@ -214,9 +265,8 @@ class DirTable:
 
 
 class TreeObject:
-    def __init__(self, info, parent=None):
-        self.__name = info["name"]
-        self.__lba = info["lba"]
+    def __init__(self, entry: ObjectEntry, parent: Optional["TreeObject"]=None):
+        self._entry = entry
         self.__parent = parent
 
     @property
@@ -225,11 +275,11 @@ class TreeObject:
 
     @property
     def name(self):
-        return self.__name
+        return self._entry.name
 
     @property
     def lba(self):
-        return self.__lba
+        return self._entry.lba
 
     @property
     def path(self):
@@ -237,32 +287,30 @@ class TreeObject:
             return ""
         return f"{self.parent.path}/{self.name}"
 
-    def update_toc(self, lba, size):
+    def update_toc(self, lba: int, size: int):
         self.parent._dirtable.set_entry(self.name, lba, size)
 
 class TreeFile(TreeObject):
-    def __init__(self, info, parent=None):
-        super().__init__(info, parent=parent)
-        self.__size = info["size"]
-
     @property
-    def size(self):
-        return self.__size
+    def size(self) -> int:
+        return self._entry.size
 
 class TreeFolder(TreeObject):
     def __init__(
-            self, info, parent=None, children=None, data=None, block_size=2048):
-        super().__init__(info, parent=parent)
-        self.id = info["dir_id"]
-        self.__children = []
+            self, entry: PathTableEntry, parent=None,
+            children: Optional[list[PathTableEntry]]=None,
+            data=None, block_size=2048
+        ):
+        super().__init__(entry, parent=parent)
+        self._children = []
         if children:
             direct_children = list(filter(
-                lambda x: x["parent_dir_id"] == self.id, children))
+                lambda x: x.parent_dir_id == self.id, children))
             for c in direct_children:
                 children.remove(c)
             for c in direct_children:
                 child = TreeFolder(c, parent=self, children=children, data=data)
-                self.__children.append(child)
+                self._children.append(child)
         self._dirtable = DirTable(data, self.lba, block_size)
         file_entries = self._dirtable.get_entries()
 
@@ -270,18 +318,28 @@ class TreeFolder(TreeObject):
         for entry in file_entries:
             files.append(TreeFile(entry, parent=self))
         files = files[2:]
-        self.__children.extend(files)
+        self._children.extend(files)
 
     def get_child(self, name: str):
         return next(i for i in self.children if i.name == name)
 
     @property
     def children(self):
-        return self.__children
+        return self._children
+
+    @property
+    def id(self):
+        return self._entry.dir_id
 
 
 class Ps2Iso:
     def __init__(self, filename: str | os.PathLike, mutable: bool=False):
+        """A class to manipulate PS2 ISOs (ISO9660)
+
+        Args:
+            filename: path to an ISO file
+            mutable: set to True to allow modifying of the data in memory (SLOW)
+        """
         self._set_logger()
         if mutable:
             self.log.info(f"Loading {filename}, this may take a while...")
@@ -419,4 +477,3 @@ class Ps2Iso:
         handler.setFormatter(formatter)
         self.log.addHandler(handler)
         self.log.setLevel(logging.INFO)
-

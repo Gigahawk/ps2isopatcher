@@ -1,7 +1,7 @@
 from bitstring import Bits
-from ps2isopatcher.iso import Ps2Iso, TreeFolder
+from ps2isopatcher.iso import Ps2Iso, TreeObject, TreeFolder
 
-def print_tree(item, level=0):
+def print_tree(item: TreeObject, level=0):
     name = item.name
     spacing = " "*(level*2)
     print(f"{spacing}{name}")
@@ -9,7 +9,7 @@ def print_tree(item, level=0):
         for c in item.children:
             print_tree(c, level=level+1)
 
-def print_tree_flat(item):
+def print_tree_flat(item: TreeObject):
     path = item.path
     print(path)
     if isinstance(item, TreeFolder):
