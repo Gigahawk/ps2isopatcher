@@ -6,11 +6,11 @@ class FileBytes(bytes):
         instance.file = open(filename, 'rb')
         instance.__file_size = instance._get_file_size()
         return instance
-    
+
     @property
     def file_size(self) -> int:
         return self.__file_size
-        
+
     def __getitem__(self, index: int | slice) -> int | bytes:
         if isinstance(index, slice):
             start, stop, step = index.indices(self.file_size)
@@ -26,7 +26,7 @@ class FileBytes(bytes):
 
     def __len__(self) -> int:
         return self.file_size
-    
+
     def _get_file_size(self) -> int:
         current_position = self.file.tell()
         self.file.seek(0, os.SEEK_END)
@@ -39,3 +39,9 @@ class FileBytes(bytes):
 
     def __del__(self):
         self.close()
+
+
+def both_endian_int(val: int) -> bytes:
+    le = val.to_bytes(length=4, byteorder="little")
+    be = val.to_bytes(length=4, byteorder="big")
+    return le + be

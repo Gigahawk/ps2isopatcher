@@ -1,4 +1,5 @@
 # https://wiki.osdev.org/ISO_9660
+from pathlib import Path
 from typing import Optional
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -8,7 +9,7 @@ from math import ceil
 
 from bitstring import BitArray, Bits
 
-from ps2isopatcher.util import FileBytes
+from ps2isopatcher.util import FileBytes, both_endian_int
 
 
 # Primary Volume Descriptor
@@ -27,13 +28,13 @@ class PVD:
     M_PATH_TABLE_OPT_OFFSET = 152
     PATH_TABLE_LENGTH = 4
 
-    def __init__(self, data: bytes):
+    def __init__(self, iso: "Ps2Iso"):
         """The Primary Volume Descriptor of an ISO9660 file
 
         Args:
             data: the contents of the ISO file
         """
-        self.data = data[
+        self.data = iso.data[
             self.PVD_OFFSET:(self.PVD_OFFSET+self.PVD_LENGTH)
         ]
 
@@ -101,16 +102,15 @@ class PathTableEntry(ObjectEntry):
     dir_id: int
 
 class PathTable(ABC):
-    def __init__(self, data: bytes, addr: int, size: int):
+    def __init__(self, iso: "Ps2Iso", addr: int, size: int):
         """A path table describing where every file/folder is on disk
 
         Args:
-            data: disk contents
+            iso: main iso class
             addr: address of path table
             size: size of path table
         """
-        self.data = data
-        self.tbl_data = self.data[addr:(addr+size)]
+        self.tbl_data = iso.data[addr:(addr+size)]
 
     def get_entries(self) -> list[PathTableEntry]:
         """Get a list of all entries in the path table"""
@@ -164,36 +164,31 @@ class MPathTable(PathTable):
         return int.from_bytes(entry[6:8], byteorder="big")
 
 class PathTables:
-    def __init__(self, data: bytes, pvd: PVD):
-        """Wrapper class to access the path tables on disk
-        """
-        self.data = data
-        size = pvd.path_table_size
-        lpt_addr = pvd.l_path_table*2048
-        mpt_addr = pvd.m_path_table*2048
-        self.l_path_table = LPathTable(self.data, lpt_addr, size)
-        self.m_path_table = MPathTable(self.data, mpt_addr, size)
+    def __init__(self, iso: "Ps2Iso"):
+        """Wrapper class to access the path tables on disk"""
+        self._iso = iso
+        size = iso.pvd.path_table_size
+        lpt_addr = iso.pvd.l_path_table*2048
+        mpt_addr = iso.pvd.m_path_table*2048
+        self.l_path_table = LPathTable(iso, lpt_addr, size)
+        self.m_path_table = MPathTable(iso, mpt_addr, size)
 
     def get_path_tree(self) -> "TreeFolder":
         paths = self.l_path_table.get_entries()
         root = paths.pop(0)
-        return TreeFolder(root, children=paths, data=self.data)
+        return TreeFolder(self._iso, root, children=paths)
 
 
 class DirTable:
-    def __init__(self, data: bytes, lba: int, block_size: int):
+    def __init__(self, iso: "Ps2Iso", lba: int):
         """Directory table showing all files inside of a folder
 
         Args:
-            data: disk contents
             lba: block number where the table is
-            block_lize: size of a block on disk
 
         """
-        self.dt_addr = lba*block_size
-        self.dt_size = block_size
-        self.data = data
-        self.set_tbl_data()
+        self._iso = iso
+        self.dt_addr = lba*iso.block_size
 
     def get_entries(self) -> list[FileEntry]:
         entries = []
@@ -217,39 +212,32 @@ class DirTable:
         return entries
 
     def set_entry(self, name: str, lba: int, size: int):
-        i = 0
+        idx = 0
         print(f"Searching for {name}")
         while True:
-            total_len = int.from_bytes(self.tbl_data[i:(i+1)])
+            total_len = self.tbl_data[idx]
             if total_len == 0:
                 break
-            offset = i
-            entry = self.tbl_data[offset:(i+total_len)]
+            entry = self.tbl_data[idx:(idx+total_len)]
             name_len = self._get_name_length(entry)
             n = self._get_name(entry, name_len)
             print(n)
             if n == name:
-                iso_offset = offset + self.dt_addr
-                lba_offset = iso_offset + 2*8
-                size_offset = iso_offset + 10*8
-                lba_le = Bits(uintle=lba, length=4*8)
-                lba_be = Bits(uintbe=lba, length=4*8)
-                lba_bits = BitArray()
-                lba_bits.append(lba_le)
-                lba_bits.append(lba_be)
-                size_le = Bits(uintle=size, length=4*8)
-                size_be = Bits(uintbe=size, length=4*8)
-                size_bits = BitArray()
-                size_bits.append(size_le)
-                size_bits.append(size_be)
-                self.data.overwrite(lba_bits, lba_offset)
-                self.data.overwrite(size_bits, size_offset)
-                self.set_tbl_data()
+                iso_offset = idx + self.dt_addr
+                lba_offset = iso_offset + 2
+                size_offset = iso_offset + 10
+                lba_bytes = both_endian_int(lba)
+                size_bytes = both_endian_int(size)
+                self._iso.overwrite(lba_bytes, lba_offset)
+                self._iso.overwrite(size_bytes, size_offset)
                 break
-            i += total_len
+            idx += total_len
 
-    def set_tbl_data(self):
-        self.tbl_data = self.data[self.dt_addr:(self.dt_addr+self.dt_size)]
+    @property
+    def tbl_data(self) -> bytes:
+        return self._iso.data[
+            self.dt_addr:(self.dt_addr+self._iso.block_size)
+        ]
 
     def _get_lba(self, entry) -> int:
         return int.from_bytes(entry[2:6], byteorder="little")
@@ -265,7 +253,11 @@ class DirTable:
 
 
 class TreeObject:
-    def __init__(self, entry: ObjectEntry, parent: Optional["TreeObject"]=None):
+    def __init__(
+            self, iso: "Ps2Iso", entry: ObjectEntry,
+            parent: Optional["TreeFolder"]=None
+        ):
+        self._iso = iso
         self._entry = entry
         self.__parent = parent
 
@@ -290,45 +282,82 @@ class TreeObject:
     def update_toc(self, lba: int, size: int):
         self.parent._dirtable.set_entry(self.name, lba, size)
 
+
 class TreeFile(TreeObject):
     @property
     def size(self) -> int:
         return self._entry.size
 
+    @property
+    def data(self) -> bytes:
+        start = self.lba*self._iso.block_size
+        end = start + self.size
+        return self._iso.data[start:end]
+
+    def export(
+            self,
+            target_dir: str | os.PathLike,
+            preserve_path: bool=True,
+            include_version: bool=False,
+        ):
+        """Export a file to the local file system
+
+        Args:
+            target_dir: the folder to export to
+            preserve_path: set to True to export with the full folder structure
+                           set to False to only export the file
+            include_version: set to True to include the version number in the filename
+        """
+        target_dir = Path(target_dir)
+        if preserve_path:
+            # Skip leading slash
+            full_dir = target_dir / Path(self.path[1:]).parent
+        else:
+            full_dir = target_dir
+        full_dir.mkdir(parents=True, exist_ok=True)
+        if include_version:
+            name = Path(self.path).name
+        else:
+            name = Path(self.path).name.rsplit(";", 1)[0]
+        with open(full_dir / name, "wb") as f:
+            f.write(self.data)
+
+
 class TreeFolder(TreeObject):
     def __init__(
-            self, entry: PathTableEntry, parent=None,
+            self, iso: "Ps2Iso", entry: PathTableEntry, parent=None,
             children: Optional[list[PathTableEntry]]=None,
-            data=None, block_size=2048
         ):
-        super().__init__(entry, parent=parent)
-        self._children = []
+        super().__init__(iso, entry, parent=parent)
+        self._children: list[TreeObject] = []
         if children:
             direct_children = list(filter(
                 lambda x: x.parent_dir_id == self.id, children))
             for c in direct_children:
                 children.remove(c)
             for c in direct_children:
-                child = TreeFolder(c, parent=self, children=children, data=data)
+                child = TreeFolder(
+                    self._iso, c, parent=self, children=children)
                 self._children.append(child)
-        self._dirtable = DirTable(data, self.lba, block_size)
+        self._dirtable = DirTable(self._iso, self.lba)
         file_entries = self._dirtable.get_entries()
 
         files = []
         for entry in file_entries:
-            files.append(TreeFile(entry, parent=self))
+            files.append(TreeFile(self._iso, entry, parent=self))
+        # Skip the "." and ".." entries
         files = files[2:]
         self._children.extend(files)
 
-    def get_child(self, name: str):
+    def get_child(self, name: str) -> TreeObject:
         return next(i for i in self.children if i.name == name)
 
     @property
-    def children(self):
+    def children(self) -> list[TreeObject]:
         return self._children
 
     @property
-    def id(self):
+    def id(self) -> int:
         return self._entry.dir_id
 
 
@@ -347,7 +376,7 @@ class Ps2Iso:
                 self.data = f.read()
         else:
             self.data = FileBytes(filename)
-        self.pvd = PVD(self.data)
+        self.pvd = PVD(self)
         self.block_size = self.pvd.logical_block_size
 
         if self.pvd.system_identifier != "PLAYSTATION":
@@ -363,10 +392,14 @@ class Ps2Iso:
             self.log.warning(
                 f"{filename} may not be a PS2 ISO file")
 
-        self.path_tables = PathTables(self.data, self.pvd)
-        self.tree = self.path_tables.get_path_tree()
+        self.path_tables = PathTables(self)
+        self._tree = self.path_tables.get_path_tree()
 
-    def get_object(self, path: str):
+    @property
+    def tree(self):
+        return self._tree
+
+    def get_object(self, path: str) -> TreeObject:
         paths = path.split("/")
         if paths[0] == "":
             paths.pop(0)
@@ -375,22 +408,31 @@ class Ps2Iso:
             mark = mark.get_child(p)
         return mark
 
-    def get_blocks_allocated(self, path):
-        obj = self.get_object(path)
+    def get_blocks_allocated(self, path: str) -> int:
+        """Get the number of blocks currently available to a path"""
         lba_list = self.get_lba_list()
         obj_idx = next(idx for idx, i in enumerate(lba_list) if i[1] == path)
         lba = lba_list[obj_idx][0]
-        next_lba = lba_list[obj_idx + 1][0]
+        try:
+            next_lba = lba_list[obj_idx + 1][0]
+        except IndexError:
+            obj: TreeFile = self.get_object(path)
+            return self.blocks_required(obj.data)
         return next_lba - lba
 
     def get_lba(self, path):
         return self.get_object(path).lba
 
-    def replace_files(self, replacements, allow_move=False):
+    def get_next_free_block(self) -> int:
+        lba, path = self.get_lba_list()[-1]
+        num_blocks = self.get_blocks_allocated(path)
+        return lba + num_blocks
+
+    def replace_files(self, replacements: tuple[str, bytes], allow_move=False):
         paths = [path for path, _ in replacements]
         bins = [b for _, b in replacements]
-        sizes = [len(b)//8 for b in bins]
-        blocks_required = [ceil(len(b)/8/self.block_size) for b in bins]
+        sizes = [len(b) for b in bins]
+        blocks_required = [self.blocks_required(b) for b in bins]
         curr_lba = [self.get_lba(p) for p in paths]
         curr_blocks_allocated = [self.get_blocks_allocated(p) for p in paths]
 
@@ -426,34 +468,67 @@ class Ps2Iso:
         if not allow_move:
             for i in items:
                 i["new_lba"] = i["curr_lba"]
-                b = i["bin"]
-                offset = i["curr_lba"]*self.block_size*8
-                self.data.overwrite(b, offset)
+                offset = i["curr_lba"]*self.block_size
+                self.overwrite(i["bin"], offset)
+                self.update_toc(i["path"], i["new_lba"], i["size"])
         else:
-            raise NotImplementedError("Moving files is not supported yet")
-
-        for i in items:
-            self.update_toc(i["path"], i["new_lba"], i["size"])
+            # Ideally we would try to insert a few blocks to fit our data,
+            # but that would involve shifting all the objects that exist beyond,
+            # kind of a pain, may also cause issues in some cases if the game
+            # hardcodes an address.
+            # Instead, we take the lazy approach and just move the file to the
+            # end of the image. This will result in a balooning file size, but
+            # hopefully compressing to .chd will make it less of a problem
+            for i in items:
+                i["new_lba"] = self.get_next_free_block()
+                offset = i["new_lba"]*self.block_size
+                self.overwrite(i["bin"], offset)
+                self.update_toc(i["path"], i["new_lba"], i["size"])
 
     def update_toc(self, path, lba, size):
         self.get_object(path).update_toc(lba, size)
 
     def write(self, filename):
         with open(filename, "wb") as f:
-            self.data.tofile(f)
+            f.write(self.data)
 
     def clear_blocks(self, start_block, num_blocks):
-        start_addr = start_block*self.block_size*8
-        end_addr = start_addr + num_blocks*self.block_size*8
-        self.data.set(0, range(start_addr, end_addr))
+        start_addr = start_block*self.block_size
+        blank_data = bytes(num_blocks*self.block_size)
+        self.overwrite(blank_data, start_addr)
 
-    def get_lba_list(self):
+    def get_lba_list(self) -> list[tuple[int, str]]:
+        """Get a list containing all paths on disk and their associated lba"""
         root = self.tree
         lba_list = self._get_lba_list(root)
         lba_list = list(set(lba_list))
         return sorted(lba_list, key=lambda x: x[0])
 
-    def _get_lba_list(self, item, lba_list=None):
+    def overwrite(self, data: bytes, addr: int):
+        """Overwrite the underlying data on the disk
+
+        Args:
+            data: data to overwrite
+            addr: address to start writing at
+        """
+        end_addr = addr + len(data)
+        diff = end_addr - len(self.data)
+        if diff > 0:
+            num_blocks = self.blocks_required(diff)
+            self.data += bytes(num_blocks*self.block_size)
+        self.data = (
+            self.data[:addr] + data + self.data[addr + len(data):]
+        )
+
+    def blocks_required(self, data: bytes | int) -> int:
+        """Calculate the blocks required to store data"""
+        if isinstance(data, bytes):
+            size = len(data)
+        if isinstance(data, int):
+            size = data
+        return ceil(size/self.block_size)
+
+    def _get_lba_list(self, item: TreeObject, lba_list=None):
         if lba_list is None:
             lba_list = []
         lba = item.lba
