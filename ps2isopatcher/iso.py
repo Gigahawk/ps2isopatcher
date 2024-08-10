@@ -371,7 +371,7 @@ class Ps2Iso:
         if mutable:
             self.log.info(f"Loading {filename}, this may take a while...")
             with open(filename, "rb") as f:
-                self.data = f.read()
+                self.data = bytearray(f.read())
         else:
             self.data = FileBytes(filename)
         self.pvd = PVD(self)
@@ -509,18 +509,18 @@ class Ps2Iso:
             data: data to overwrite
             addr: address to start writing at
         """
+        if not isinstance(self.data, bytearray):
+            raise ValueError("Can not mutate an immutable Ps2Iso")
         end_addr = addr + len(data)
         diff = end_addr - len(self.data)
         if diff > 0:
             num_blocks = self.blocks_required(diff)
-            self.data += bytes(num_blocks*self.block_size)
-        self.data = (
-            self.data[:addr] + data + self.data[addr + len(data):]
-        )
+            self.data += bytearray(num_blocks*self.block_size)
+        self.data[addr:addr + len(data)] = data
 
     def blocks_required(self, data: bytes | int) -> int:
         """Calculate the blocks required to store data"""
-        if isinstance(data, bytes):
+        if isinstance(data, (bytes, bytearray)):
             size = len(data)
         if isinstance(data, int):
             size = data

@@ -18,7 +18,7 @@ def print_tree_flat(item: TreeObject):
 
 def main():
     f_name = "mm.iso"
-    iso = Ps2Iso(f_name, mutable=False)
+    iso = Ps2Iso(f_name, mutable=True)
     print_tree(iso.tree)
     print_tree_flat(iso.tree)
     path = "/PDATA/DATA0.BIN;1"
