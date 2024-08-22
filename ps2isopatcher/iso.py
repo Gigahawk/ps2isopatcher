@@ -1,4 +1,5 @@
 # https://wiki.osdev.org/ISO_9660
+from typing import Generator
 from pathlib import Path
 from typing import Optional
 from abc import ABC, abstractmethod
@@ -358,6 +359,26 @@ class TreeFolder(TreeObject):
     def id(self) -> int:
         return self._entry.dir_id
 
+def walk_tree(
+        root: TreeFolder
+) -> Generator[
+    tuple[TreeFolder, list[TreeFolder], TreeFile],
+    None, None
+]:
+    folders = [root]
+    while folders:
+        folder = folders.pop(0)
+        subfolders = []
+        files = []
+        for child in folder.children:
+            if isinstance(child, TreeFolder):
+                subfolders.append(child)
+            elif isinstance(child, TreeFile):
+                files.append(child)
+            else:
+                raise ValueError(f"Invalid child of TreeFolder {child}")
+        yield folder, subfolders, files
+        folders.extend(subfolders)
 
 class Ps2Iso:
     def __init__(self, filename: str | os.PathLike, mutable: bool=False):

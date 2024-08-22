@@ -1,12 +1,10 @@
-from ps2isopatcher.iso import Ps2Iso, TreeObject, TreeFolder, TreeFile
+from ps2isopatcher.iso import Ps2Iso, TreeObject, TreeFolder, TreeFile, walk_tree
 
-def print_tree(item: TreeObject, level=0):
-    name = item.name
-    spacing = " "*(level*2)
-    print(f"{spacing}{name}")
-    if isinstance(item, TreeFolder):
-        for c in item.children:
-            print_tree(c, level=level+1)
+def print_tree(root: TreeFolder):
+    for folder, subfolders, files in walk_tree(root):
+        for f in files:
+            print(f.path)
+
 
 def print_tree_flat(item: TreeObject):
     path = item.path
@@ -18,7 +16,7 @@ def print_tree_flat(item: TreeObject):
 
 def main():
     f_name = "mm.iso"
-    iso = Ps2Iso(f_name, mutable=True)
+    iso = Ps2Iso(f_name, mutable=False)
     print_tree(iso.tree)
     print_tree_flat(iso.tree)
     path = "/PDATA/DATA0.BIN;1"
