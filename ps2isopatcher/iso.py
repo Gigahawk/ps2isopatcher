@@ -278,6 +278,12 @@ class TreeObject:
             return ""
         return f"{self.parent.path}/{self.name}"
 
+    @property
+    def path_no_ver(self):
+        if self.parent is None:
+            return ""
+        return f"{self.parent.path}/{self.name.split(';')[0]}"
+
     def update_toc(self, lba: int, size: int):
         self.parent._dirtable.set_entry(self.name, lba, size)
 
