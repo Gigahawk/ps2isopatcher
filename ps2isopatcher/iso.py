@@ -490,25 +490,13 @@ class Ps2Iso:
             lba = i["curr_lba"]
             num_blocks =  i["curr_blocks_allocated"]
             self.clear_blocks(lba, num_blocks)
-        if not allow_move:
-            for i in items:
-                i["new_lba"] = i["curr_lba"]
-                offset = i["curr_lba"]*self.block_size
-                self.overwrite(i["bin"], offset)
-                self.update_toc(i["path"], i["new_lba"], i["size"])
-        else:
-            # Ideally we would try to insert a few blocks to fit our data,
-            # but that would involve shifting all the objects that exist beyond,
-            # kind of a pain, may also cause issues in some cases if the game
-            # hardcodes an address.
-            # Instead, we take the lazy approach and just move the file to the
-            # end of the image. This will result in a balooning file size, but
-            # hopefully compressing to .chd will make it less of a problem
-            for i in items:
-                i["new_lba"] = self.get_next_free_block()
-                offset = i["new_lba"]*self.block_size
-                self.overwrite(i["bin"], offset)
-                self.update_toc(i["path"], i["new_lba"], i["size"])
+            if i["blocks_required"] > i["curr_blocks_allocated"]:
+                new_lba = self.get_next_free_block()
+            else:
+                new_lba = lba
+            offset = new_lba*self.block_size
+            self.overwrite(i["bin"], offset)
+            self.update_toc(i["path"], new_lba, i["size"])
 
     def update_toc(self, path, lba, size):
         self.get_object(path).update_toc(lba, size)
