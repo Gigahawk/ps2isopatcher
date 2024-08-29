@@ -6,10 +6,11 @@ authors = ["Jasper Chan <jasperchan515@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.scripts]
-ps2isopatcher = 'ps2isopatcher.cli:main'
+ps2isopatcher = 'ps2isopatcher.cli:cli'
 
 [tool.poetry.dependencies]
 python = "^3.7"
+click = "^8.1.7"
 
 
 [build-system]

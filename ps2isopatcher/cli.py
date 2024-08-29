@@ -1,48 +1,61 @@
-from ps2isopatcher.iso import Ps2Iso, TreeObject, TreeFolder, TreeFile, walk_tree
+from pathlib import Path
+import os
+
+import click
+
+from ps2isopatcher.iso import (
+    Ps2Iso, TreeFolder, walk_tree
+)
 
 def print_tree(root: TreeFolder):
-    for folder, subfolders, files in walk_tree(root):
+    for _, _, files in walk_tree(root):
         for f in files:
             print(f.path)
 
+@click.group()
+def cli():
+    pass
 
-def print_tree_flat(item: TreeObject):
-    path = item.path
-    print(path)
-    if isinstance(item, TreeFolder):
-        for c in item.children:
-            print_tree_flat(c)
+iso_opt = click.argument(
+    "iso",
+    type=click.Path(),
+)
 
-
-def main():
-    f_name = "mm.iso"
-    iso = Ps2Iso(f_name, mutable=False)
+@cli.command()
+@iso_opt
+def tree(iso):
+    iso = Ps2Iso(iso, mutable=False)
     print_tree(iso.tree)
-    print_tree_flat(iso.tree)
-    path = "/PDATA/DATA0.BIN;1"
-    obj: TreeFile= iso.get_object(path)
-    print(f"{path} is at lba {obj.lba}")
-    print(f"start: {hex(obj.lba*iso.block_size)}")
-    print(f"end: {hex(obj.lba*iso.block_size + obj.size)}")
-    print(f"size: {obj.size}")
-    print(f"{path} has {iso.get_blocks_allocated(path)} blocks allocated")
-    print(f"Exporting {path}")
-    obj.export(".export")
-    data = obj.data
 
-    print(f"Appending {path} with a buncha B0 00 00 B5")
-    data += bytes([0xB0, 0x00, 0x00, 0xB5]*1000)
-
-    #print("Removing last entry from index, hopefully it's not that important")
-    #data = data[:-12]
-
-    replacements = [(path, data)]
-    iso.replace_files(replacements, allow_move=True)
-    print(f"Writing to out.iso")
-    iso.write("out.iso")
+@cli.command()
+@iso_opt
+@click.option(
+    "-o", "--output-path",
+    default=None,
+    type=click.Path(),
+)
+@click.option(
+    "-r", "--replace",
+    nargs=2,
+    type=click.Tuple([str, click.Path()]),
+    multiple=True,
+)
+@click.option(
+    "--move/--no-move",
+    default=True
+)
+def patch(iso, output_path, replace, move):
+    _iso = Ps2Iso(iso, mutable=True)
+    iso = Path(iso)
+    if output_path is None:
+        output_path = Path(os.getcwd()) / f"{iso.stem}_patched.iso"
+    replacements = []
+    for iso_path, path in replace:
+        with open(path, "rb") as f:
+            replacements.append((iso_path, f.read()))
+    _iso.replace_files(replacements, allow_move=move)
+    _iso.write(str(output_path))
 
 
 if __name__ == "__main__":
-    main()
-
-
+    cli()
