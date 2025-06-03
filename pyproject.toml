@@ -1,18 +1,12 @@
-[tool.poetry]
+[project]
 name = "ps2isopatcher"
 version = "0.1.0"
 description = "Modify PS2 ISO files"
-authors = ["Jasper Chan <jasperchan515@gmail.com>"]
 readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+    "click>=8.1.8",
+]
 
-[tool.poetry.scripts]
+[project.scripts]
 ps2isopatcher = 'ps2isopatcher.cli:cli'
-
-[tool.poetry.dependencies]
-python = "^3.7"
-click = "^8.1.7"
-
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"

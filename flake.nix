@@ -4,49 +4,68 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    poetry2nix = {
-      url = "github:nix-community/poetry2nix";
+    pyproject-nix = {
+      url = "github:pyproject-nix/pyproject.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    uv2nix = {
+      url = "github:pyproject-nix/uv2nix";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    pyproject-build-systems = {
+      url = "github:pyproject-nix/build-system-pkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.uv2nix.follows = "uv2nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, poetry2nix, ... }:
+  outputs = {
+    self, nixpkgs, flake-utils, pyproject-nix, uv2nix, pyproject-build-systems,
+    ...
+  }:
     flake-utils.lib.eachDefaultSystem (system:
     let
+      inherit (nixpkgs) lib;
       pkgs = import nixpkgs { inherit system; };
-      inherit (poetry2nix.lib.mkPoetry2Nix { inherit pkgs; })
-        mkPoetryEnv mkPoetryApplication defaultPoetryOverrides;
-      #poetryEnv = mkPoetryEnv {
-      #  projectDir = ./.;
-      #};
+      python = pkgs.python312;
+
+      workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
+      overlay = workspace.mkPyprojectOverlay {
+        sourcePreference = "wheel";
+      };
+      hacks = pkgs.callPackage pyproject-nix.build.hacks {};
+
+      pyprojectOverrides = final: prev: {
+      };
+
+      pythonSet =
+        (pkgs.callPackage pyproject-nix.build.packages {
+          inherit python;
+        }).overrideScope (
+          lib.composeManyExtensions [
+            pyproject-build-systems.overlays.default
+            overlay
+            pyprojectOverrides
+          ]
+        );
+
+      inherit (pkgs.callPackages pyproject-nix.build.util { }) mkApplication;
+
     in {
       packages = {
-        ps2isopatcher = mkPoetryApplication {
-          projectDir = self;
-          overrides = defaultPoetryOverrides.extend
-            (final: prev: {
-              hatchling = prev.hatchling.overridePythonAttrs
-              (
-                old: {
-                  buildInputs = (old.buildInputs or [ ]) ++ [ prev.pluggy ];
-                }
-              );
-            });
+        ps2isopatcher = mkApplication {
+          venv = pythonSet.mkVirtualEnv "application-env" workspace.deps.default;
+          package = pythonSet.ps2isopatcher;
         };
         default = self.packages.${system}.ps2isopatcher;
       };
-      #devShells.default = pkgs.mkShell {
-      #  buildInputs = [
-      #    poetryEnv
-      #  ];
-      #};
-      devShells.poetry = pkgs.mkShell {
-        buildInputs = [
-          # Required to make poetry shell work properly
-          pkgs.bashInteractive
-        ];
+      devShells.uv = pkgs.mkShell {
         packages = [
-          pkgs.poetry
+          pkgs.uv
         ];
       };
     });
